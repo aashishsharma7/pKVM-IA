@@ -152,16 +152,23 @@ static int vfio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	struct vfio_pci_core_device *vdev;
 	int ret;
 
-	if (vfio_pci_is_denylisted(pdev))
+	pr_info("pkvm_debug: vfio_pci_probe called for %s\n", dev_name(&pdev->dev));
+
+	if (vfio_pci_is_denylisted(pdev)) {
+		pr_info("pkvm_debug: device is denylisted\n");
 		return -EINVAL;
+	}
 
 	vdev = vfio_alloc_device(vfio_pci_core_device, vdev, &pdev->dev,
 				 &vfio_pci_ops);
-	if (IS_ERR(vdev))
+	if (IS_ERR(vdev)) {
+		pr_info("pkvm_debug: vfio_alloc_device failed: %ld\n", PTR_ERR(vdev));
 		return PTR_ERR(vdev);
+	}
 
 	dev_set_drvdata(&pdev->dev, vdev);
 	ret = vfio_pci_core_register_device(vdev);
+	pr_info("pkvm_debug: vfio_pci_core_register_device returned: %d\n", ret);
 	if (ret)
 		goto out_put_vdev;
 	return 0;

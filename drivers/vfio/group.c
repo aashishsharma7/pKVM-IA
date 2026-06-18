@@ -574,19 +574,23 @@ static struct vfio_group *vfio_create_group(struct iommu_group *iommu_group,
 	lockdep_assert_held(&vfio.group_lock);
 
 	group = vfio_group_alloc(iommu_group, type);
-	if (IS_ERR(group))
+	if (IS_ERR(group)) {
+		pr_info("pkvm_debug: vfio_group_alloc failed: %ld\n", PTR_ERR(group));
 		return group;
+	}
 
 	err = dev_set_name(&group->dev, "%s%d",
 			   group->type == VFIO_NO_IOMMU ? "noiommu-" : "",
 			   iommu_group_id(iommu_group));
 	if (err) {
+		pr_info("pkvm_debug: dev_set_name failed: %d\n", err);
 		ret = ERR_PTR(err);
 		goto err_put;
 	}
 
 	err = cdev_device_add(&group->cdev, &group->dev);
 	if (err) {
+		pr_info("pkvm_debug: cdev_device_add failed: %d\n", err);
 		ret = ERR_PTR(err);
 		goto err_put;
 	}
@@ -656,6 +660,7 @@ static struct vfio_group *vfio_group_find_or_alloc(struct device *dev)
 	struct vfio_group *group;
 
 	iommu_group = iommu_group_get(dev);
+	pr_info("pkvm_debug: iommu_group_get returned: %p\n", iommu_group);
 	if (!iommu_group && vfio_noiommu) {
 		/*
 		 * With noiommu enabled, create an IOMMU group for devices that
@@ -671,18 +676,22 @@ static struct vfio_group *vfio_group_find_or_alloc(struct device *dev)
 		return group;
 	}
 
-	if (!iommu_group)
+	if (!iommu_group) {
+		pr_info("pkvm_debug: no iommu group found (noiommu disabled)\n");
 		return ERR_PTR(-EINVAL);
+	}
 
 	mutex_lock(&vfio.group_lock);
 	group = vfio_group_find_from_iommu(iommu_group);
 	if (group) {
+		pr_info("pkvm_debug: found existing group: %p\n", group);
 		if (WARN_ON(vfio_group_has_device(group, dev)))
 			group = ERR_PTR(-EINVAL);
 		else
 			refcount_inc(&group->drivers);
 	} else {
 		group = vfio_create_group(iommu_group, VFIO_IOMMU);
+		pr_info("pkvm_debug: vfio_create_group returned: %p\n", group);
 	}
 	mutex_unlock(&vfio.group_lock);
 
@@ -701,8 +710,10 @@ int vfio_device_set_group(struct vfio_device *device,
 	else
 		group = vfio_noiommu_group_alloc(device->dev, type);
 
-	if (IS_ERR(group))
+	if (IS_ERR(group)) {
+		pr_info("pkvm_debug: vfio_device_set_group failed to allocate/find group: %ld\n", PTR_ERR(group));
 		return PTR_ERR(group);
+	}
 
 	/* Our reference on group is moved to the device */
 	device->group = group;

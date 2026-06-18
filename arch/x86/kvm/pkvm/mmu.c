@@ -7,6 +7,7 @@
 #include "mmu.h"
 #include "pgtable.h"
 #include "pkvm.h"
+#include "debug.h"
 
 static struct pkvm_pgtable hyp_mmu;
 static struct pkvm_pool hyp_mmu_pool;
@@ -431,7 +432,8 @@ static void pkvm_guest_mmu_unlock(struct pkvm_vm *vm)
 }
 
 static u64 guest_mmu_pte_prot(struct kvm_vcpu *vcpu, unsigned long gpa,
-			      bool writable, enum pkvm_page_state state)
+			      bool writable, enum pkvm_page_state state,
+			      bool mmio)
 {
 	struct pkvm_vm *pkvm_vm = to_pkvm_vcpu(vcpu)->pkvm_vm;
 	u64 prot;
@@ -440,7 +442,7 @@ static u64 guest_mmu_pte_prot(struct kvm_vcpu *vcpu, unsigned long gpa,
 	prot |= pkvm_vm->mmu.pgt_ops->pte_mk_pgstate(state);
 
 	/* memory type bits */
-	prot |= kvm_x86_call(get_mt_mask)(vcpu, gpa >> PAGE_SHIFT, false);
+	prot |= kvm_x86_call(get_mt_mask)(vcpu, gpa >> PAGE_SHIFT, mmio);
 
 	return prot;
 }
@@ -1438,7 +1440,7 @@ out:
 int pkvm_host_donate_guest(struct kvm_vcpu *vcpu, unsigned long gpa,
 			   unsigned long hpa, unsigned long size)
 {
-	u64 prot = guest_mmu_pte_prot(vcpu, gpa, true, PKVM_PAGE_OWNED);
+	u64 prot = guest_mmu_pte_prot(vcpu, gpa, true, PKVM_PAGE_OWNED, false);
 	struct pkvm_vm *pkvm_vm = to_pkvm_vcpu(vcpu)->pkvm_vm;
 	unsigned long gpa_offset, pvmfw_offset, load_size;
 	int ret;
@@ -1524,7 +1526,7 @@ int pkvm_host_share_guest(struct kvm_vcpu *vcpu, unsigned long gpa,
 			  bool writable)
 {
 	u64 prot = guest_mmu_pte_prot(vcpu, gpa, writable,
-				      PKVM_PAGE_SHARED_BORROWED);
+				      PKVM_PAGE_SHARED_BORROWED, false);
 	struct pkvm_vm *pkvm_vm = to_pkvm_vcpu(vcpu)->pkvm_vm;
 	int ret;
 
@@ -1863,4 +1865,62 @@ void pkvm_host_unuse_dma(unsigned long phys, unsigned long size)
 		pkvm_page_ref_dec(page);
 unlock:
 	pkvm_host_mmu_unlock();
+}
+
+/**
+ * pkvm_host_share_guest_mmio() - Share host MMIO pages with a guest.
+ * @vcpu:	The vCPU of the guest VM to share the host MMIO pages with.
+ * @gpa:	Address of the guest physical address region to share.
+ * @hpa:	Address of the host physical address region to share.
+ * @size:	Size of the physical address region to share.
+ * @writable:	Whether the shared mapping is writable.
+ *
+ * Map the Host MMIO pages in the guest's EPT, and set its memory type as UC.
+ * The guest must be a non-protected VM. The GPA, HPA and size are required to
+ * be PAGE_SIZE aligned.
+ *
+ * Returns: 0 on success, or a negative error code on failure.
+ */
+int pkvm_host_share_guest_mmio(struct kvm_vcpu *vcpu, unsigned long gpa,
+			       unsigned long hpa, unsigned long size,
+			       bool writable)
+{
+	struct pkvm_vm *pkvm_vm = to_pkvm_vcpu(vcpu)->pkvm_vm;
+	u64 prot;
+	int ret;
+
+	pkvm_info("MMIO share request: gpa=0x%lx, hpa=0x%lx, size=0x%lx\n", gpa, hpa, size);
+
+	if (!is_valid_addr_range(hpa, size, true) ||
+	    !is_valid_addr_range(gpa, size, true))
+		return -EINVAL;
+
+	if (!is_mmio_range(hpa, size))
+		return -EINVAL;
+
+	pkvm_host_mmu_lock();
+	ret = check_page_owner_and_state(&host_mmu, hpa, size,
+					 PKVM_ID_HOST, PKVM_PAGE_OWNED);
+	if (ret) {
+		pkvm_host_mmu_unlock();
+		return ret;
+	}
+
+	pkvm_guest_mmu_lock(pkvm_vm);
+
+	ret = check_page_state(&pkvm_vm->mmu, gpa, size, PKVM_PAGE_NONE);
+	if (ret)
+		goto unlock;
+
+	prot = guest_mmu_pte_prot(vcpu, gpa, writable,
+				  PKVM_PAGE_SHARED_BORROWED, true);
+
+	ret = pkvm_pgtable_map(&pkvm_vm->mmu, gpa, hpa, size, prot,
+			       &vcpu->arch.pkvm.guest_mmu_memcache);
+
+unlock:
+	pkvm_guest_mmu_unlock(pkvm_vm);
+	pkvm_host_mmu_unlock();
+
+	return ret;
 }

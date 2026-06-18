@@ -9483,22 +9483,9 @@ __init int vmx_hardware_setup(void)
 
 	if (!cpu_has_vmx_apicv())
 		enable_apicv = 0;
-	if (!enable_apicv)
 #ifndef __PKVM_HYP__
+	if (!enable_apicv)
 		x86_ops->sync_pir_to_irr = NULL;
-#else
-		/*
-		 * To mitigate the attack from the host by injecting malicious
-		 * software interrupt on vector 0x80, the pVM needs to either
-		 * not handle the software interrupt 0x80 by disabling the IA32
-		 * emulation or have the protected apic which is reliable for
-		 * the pVM to distinguish software and external int 0x80 so that
-		 * the pVM can only perform IA32 emulation for the software one.
-		 *
-		 * As the pVM's kernel now doesn't have the code to disable the
-		 * IA32 emulation, require the APICv support in hardware.
-		 */
-		return -EOPNOTSUPP;
 #endif
 
 	if (!enable_apicv || !cpu_has_vmx_ipiv())
@@ -10015,9 +10002,19 @@ static void pkvm_vmx_share_vcpu_state_with_host(struct kvm_vcpu *vcpu)
 	}
 }
 
+#ifdef __PKVM_HYP__
+static u64 pkvm_vmx_get_host_tsc_offset(void)
+{
+	return vmcs_read64(TSC_OFFSET);
+}
+#endif
+
 static struct pkvm_x86_ops pkvm_vt_x86_ops = {
 	.update_vcpu_state_from_host = pkvm_vmx_update_vcpu_state_from_host,
 	.share_vcpu_state_with_host = pkvm_vmx_share_vcpu_state_with_host,
+#ifdef __PKVM_HYP__
+	.get_host_tsc_offset = pkvm_vmx_get_host_tsc_offset,
+#endif
 };
 
 int pkvm_vmx_init(void)

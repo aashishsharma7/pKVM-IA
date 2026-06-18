@@ -2167,11 +2167,15 @@ int vfio_pci_core_register_device(struct vfio_pci_core_device *vdev)
 	if (ret)
 		return ret;
 	ret = vfio_pci_vf_init(vdev);
-	if (ret)
+	if (ret) {
+		pr_info("pkvm_debug: vfio_pci_vf_init failed: %d\n", ret);
 		return ret;
+	}
 	ret = vfio_pci_vga_init(vdev);
-	if (ret)
+	if (ret) {
+		pr_info("pkvm_debug: vfio_pci_vga_init failed: %d\n", ret);
 		goto out_vf;
+	}
 
 	vfio_pci_probe_power_state(vdev);
 
@@ -2192,8 +2196,10 @@ int vfio_pci_core_register_device(struct vfio_pci_core_device *vdev)
 		pm_runtime_put(dev);
 
 	ret = vfio_register_group_dev(&vdev->vdev);
-	if (ret)
+	if (ret) {
+		pr_info("pkvm_debug: vfio_register_group_dev failed: %d\n", ret);
 		goto out_power;
+	}
 	return 0;
 
 out_power:

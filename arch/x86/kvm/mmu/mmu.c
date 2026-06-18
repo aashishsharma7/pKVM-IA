@@ -5030,6 +5030,10 @@ static int pkvm_page_fault(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault)
 	int r;
 
 	r = kvm_mmu_faultin_pfn(vcpu, fault, ACC_ALL);
+	if (fault->pfn == 0xfebf1 || (fault->pfn >= 0xe0000000 && fault->pfn < 0xe0000010)) {
+		pr_info("pkvm_page_fault: MMIO FAULT! gfn=%llx, pfn=%llx, r=%d, write=%d\n",
+			fault->gfn, fault->pfn, r, fault->write);
+	}
 	if (r != RET_PF_CONTINUE) {
 		/* MMIO emulation works for non-protected VMs only. */
 		if (unlikely(pkvm_is_protected_vcpu(vcpu) && r == RET_PF_EMULATE))

@@ -1423,9 +1423,15 @@ static int pkvm_vcpu_add_fpstate(struct kvm_vcpu *vcpu,
 static void pkvm_write_tsc_offset(struct kvm_vcpu *vcpu)
 {
 	u64 tsc_offset = to_pkvm_vcpu(vcpu)->shared_vcpu->arch.tsc_offset;
+	u64 host_tsc_offset = 0;
+
+	if (pkvm_x86_ops.get_host_tsc_offset)
+		host_tsc_offset = pkvm_x86_call(get_host_tsc_offset)();
 
 	vcpu->arch.l1_tsc_offset = tsc_offset;
-	vcpu->arch.tsc_offset = tsc_offset;
+	vcpu->arch.tsc_offset = tsc_offset + host_tsc_offset;
+	pkvm_info("write_tsc_offset: l1_val=%llx, host_val=%llx, final_val=%llx\n",
+		  tsc_offset, host_tsc_offset, vcpu->arch.tsc_offset);
 	kvm_x86_call(write_tsc_offset)(vcpu);
 }
 
@@ -1558,14 +1564,16 @@ static void update_vcpu_state_from_host(struct kvm_vcpu *vcpu)
 		 * Make sure the RSP/RIP in shared_vcpu are aligned with the
 		 * private vcpu if they are not dirty.
 		 */
-		if (kvm_register_is_dirty(shared_vcpu, VCPU_REGS_RSP))
+		if (kvm_register_is_dirty(shared_vcpu, VCPU_REGS_RSP)) {
 			kvm_register_mark_dirty(vcpu, VCPU_REGS_RSP);
-		else
+		} else {
 			shared_vcpu->arch.regs[VCPU_REGS_RSP] = kvm_rsp_read(vcpu);
-		if (kvm_register_is_dirty(shared_vcpu, VCPU_REGS_RIP))
+		}
+		if (kvm_register_is_dirty(shared_vcpu, VCPU_REGS_RIP)) {
 			kvm_register_mark_dirty(vcpu, VCPU_REGS_RIP);
-		else
+		} else {
 			shared_vcpu->arch.regs[VCPU_REGS_RIP] = kvm_rip_read(vcpu);
+		}
 		/* Update the npVM's GPRs from the host */
 		memcpy(vcpu->arch.regs, shared_vcpu->arch.regs,
 		       NR_VCPU_REGS * sizeof(*vcpu->arch.regs));
@@ -1773,7 +1781,10 @@ static int pkvm_vm_mmu_map(unsigned long gpa, unsigned long hpa,
 
 		ret = pkvm_host_donate_guest(vcpu, gpa, hpa, size);
 	} else {
-		ret = pkvm_host_share_guest(vcpu, gpa, hpa, size, writable);
+		if (is_mmio_range(hpa, size))
+			ret = pkvm_host_share_guest_mmio(vcpu, gpa, hpa, size, writable);
+		else
+			ret = pkvm_host_share_guest(vcpu, gpa, hpa, size, writable);
 	}
 
 	return ret;

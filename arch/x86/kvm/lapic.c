@@ -2068,6 +2068,8 @@ static void start_sw_tscdeadline(struct kvm_lapic *apic)
 
 	now = ktime_get();
 	guest_tsc = kvm_read_l1_tsc(vcpu, rdtsc());
+	pr_err("start_sw_tscdeadline: deadline=%llx, guest_tsc=%llx, diff=%lld, rdtsc=%llx, l1_offset=%llx\n",
+		tscdeadline, guest_tsc, (s64)(tscdeadline - guest_tsc), rdtsc(), vcpu->arch.l1_tsc_offset);
 
 	ns = (tscdeadline - guest_tsc) * 1000000ULL;
 	do_div(ns, this_tsc_khz);
@@ -2207,8 +2209,13 @@ static void start_sw_period(struct kvm_lapic *apic)
 	if (!apic->lapic_timer.period)
 		return;
 
+	pr_err("start_sw_period: target_expiration=%lld, now=%lld, diff=%lld\n",
+		apic->lapic_timer.target_expiration, ktime_get(),
+		ktime_to_ns(ktime_sub(apic->lapic_timer.target_expiration, ktime_get())));
+
 	if (ktime_after(ktime_get(),
 			apic->lapic_timer.target_expiration)) {
+		pr_err("start_sw_period: EXPIRED IMMEDIATELY!\n");
 		apic_timer_expired(apic, false);
 
 		if (apic_lvtt_oneshot(apic))
@@ -2289,6 +2296,13 @@ static void start_sw_timer(struct kvm_lapic *apic)
 		cancel_hv_timer(apic);
 	if (!apic_lvtt_period(apic) && atomic_read(&ktimer->pending))
 		return;
+
+	pr_err("start_sw_timer: vcpu=%d, mode=%s, pending=%d, tscdeadline=%llx\n",
+		apic->vcpu->vcpu_id,
+		apic_lvtt_period(apic) ? "period" :
+		apic_lvtt_oneshot(apic) ? "oneshot" :
+		apic_lvtt_tscdeadline(apic) ? "tscdeadline" : "unknown",
+		atomic_read(&ktimer->pending), ktimer->tscdeadline);
 
 	if (apic_lvtt_period(apic) || apic_lvtt_oneshot(apic))
 		start_sw_period(apic);

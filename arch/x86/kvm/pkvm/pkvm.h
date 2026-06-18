@@ -193,6 +193,7 @@ static inline void pkvm_set_vcpu_outside_guest(struct kvm_vcpu *vcpu)
 struct pkvm_x86_ops {
 	void (*update_vcpu_state_from_host)(struct kvm_vcpu *vcpu);
 	void (*share_vcpu_state_with_host)(struct kvm_vcpu *vcpu);
+	u64 (*get_host_tsc_offset)(void);
 };
 
 void pkvm_handle_host_hypercall(struct kvm_vcpu *vcpu);

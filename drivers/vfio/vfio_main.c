@@ -334,8 +334,10 @@ static int __vfio_register_dev(struct vfio_device *device,
 		return ret;
 
 	ret = vfio_device_set_group(device, type);
-	if (ret)
+	if (ret) {
+		pr_info("pkvm_debug: vfio_device_set_group failed: %d\n", ret);
 		return ret;
+	}
 
 	/*
 	 * VFIO always sets IOMMU_CACHE because we offer no way for userspace to
@@ -344,13 +346,16 @@ static int __vfio_register_dev(struct vfio_device *device,
 	 */
 	if (type == VFIO_IOMMU && !vfio_device_is_noiommu(device) &&
 	    !device_iommu_capable(device->dev, IOMMU_CAP_CACHE_COHERENCY)) {
+		pr_info("pkvm_debug: device lacks IOMMU_CAP_CACHE_COHERENCY\n");
 		ret = -EINVAL;
 		goto err_out;
 	}
 
 	ret = vfio_device_add(device);
-	if (ret)
+	if (ret) {
+		pr_info("pkvm_debug: vfio_device_add failed: %d\n", ret);
 		goto err_out;
+	}
 
 	/* Refcounting can't start until the driver calls register */
 	refcount_set(&device->refcount, 1);

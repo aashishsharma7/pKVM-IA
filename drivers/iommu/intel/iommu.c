@@ -4172,11 +4172,7 @@ static bool intel_iommu_capable(struct device *dev, enum iommu_cap cap)
 
 	switch (cap) {
 	case IOMMU_CAP_CACHE_COHERENCY:
-		/*
-		 * pKVM doesn't yet support the features that needs
-		 * this(vfio, iommfd etc). Disable for simplicity.
-		 */
-		return !pkvm_enabled();
+		return true;
 	case IOMMU_CAP_DEFERRED_FLUSH:
 		return true;
 	case IOMMU_CAP_PRE_BOOT_PROTECTION:

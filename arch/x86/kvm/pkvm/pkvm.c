@@ -1773,7 +1773,10 @@ static int pkvm_vm_mmu_map(unsigned long gpa, unsigned long hpa,
 
 		ret = pkvm_host_donate_guest(vcpu, gpa, hpa, size);
 	} else {
-		ret = pkvm_host_share_guest(vcpu, gpa, hpa, size, writable);
+		if (is_mmio_range(hpa, size))
+			ret = pkvm_host_share_guest_mmio(vcpu, gpa, hpa, size, writable);
+		else
+			ret = pkvm_host_share_guest(vcpu, gpa, hpa, size, writable);
 	}
 
 	return ret;

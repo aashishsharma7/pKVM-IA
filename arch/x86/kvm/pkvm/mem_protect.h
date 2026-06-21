@@ -89,6 +89,9 @@ int pkvm_host_donate_guest(struct kvm_vcpu *vcpu, unsigned long gpa,
 int pkvm_host_share_guest(struct kvm_vcpu *vcpu, unsigned long gpa,
 			  unsigned long hpa, unsigned long size,
 			  bool writable);
+int pkvm_host_share_guest_mmio(struct kvm_vcpu *vcpu, unsigned long gpa,
+			       unsigned long hpa, unsigned long size,
+			       bool writable);
 int pkvm_host_unshare_guest(struct kvm *kvm, unsigned long gpa,
 			    unsigned long size);
 int pkvm_host_test_clear_young_guest(struct kvm *kvm, unsigned long gpa,

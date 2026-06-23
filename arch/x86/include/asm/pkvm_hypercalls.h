@@ -107,6 +107,7 @@ PKVM_HC_INOUT(iommu_domain_map)
 PKVM_HC(iommu_domain_unmap)
 PKVM_HC(iommu_domain_flush)
 PKVM_HC_IN(iommu_modify_irte)
+PKVM_HC(register_device)
 #endif
 
 #undef PKVM_HC

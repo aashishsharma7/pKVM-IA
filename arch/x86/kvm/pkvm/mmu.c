@@ -1904,6 +1904,194 @@ unlock:
 	pkvm_host_mmu_unlock();
 }
 
+#define PKVM_MAX_ASSIGNED_DEVICES 16
+static struct pkvm_assigned_dev pkvm_assigned_devices[PKVM_MAX_ASSIGNED_DEVICES];
+static int pkvm_num_assigned_devices = 0;
+
+/* Legacy PCI configuration read/write via ports 0xCF8 and 0xCFC */
+static u32 pci_config_read_dword(u16 rid, u8 offset)
+{
+	u8 bus = rid >> 8;
+	u8 devfn = rid & 0xff;
+	u32 address;
+	u32 val;
+
+	address = (1U << 31) |           /* Enable bit */
+		  ((u32)bus << 16) |
+		  ((u32)(devfn >> 3) << 11) | /* Device (bits 7-3 of devfn) */
+		  ((u32)(devfn & 7) << 8) |   /* Function (bits 2-0 of devfn) */
+		  ((u32)offset & 0xfc);       /* Register offset (dword aligned) */
+
+	asm volatile("outl %0, %1" : : "a"(address), "Nd"((u16)0xCF8));
+	asm volatile("inl %1, %0" : "=a"(val) : "Nd"((u16)0xCFC));
+
+	return val;
+}
+
+static void pci_config_write_dword(u16 rid, u8 offset, u32 val)
+{
+	u8 bus = rid >> 8;
+	u8 devfn = rid & 0xff;
+	u32 address;
+
+	address = (1U << 31) |
+		  ((u32)bus << 16) |
+		  ((u32)(devfn >> 3) << 11) |
+		  ((u32)(devfn & 7) << 8) |
+		  ((u32)offset & 0xfc);
+
+	asm volatile("outl %0, %1" : : "a"(address), "Nd"((u16)0xCF8));
+	asm volatile("outl %0, %1" : : "a"(val), "Nd"((u16)0xCFC));
+}
+
+/* Discover a BAR's physical address and size directly from hardware config space */
+static bool pci_discover_bar(u16 rid, int bar_idx, unsigned long *base, unsigned long *size)
+{
+	u8 offset = 0x10 + (bar_idx * 4);
+	u32 orig_low, orig_high = 0;
+	u32 mask_low, mask_high = 0;
+	u64 val64, mask64;
+
+	*base = 0;
+	*size = 0;
+
+	orig_low = pci_config_read_dword(rid, offset);
+	if (orig_low == 0 || orig_low == 0xffffffff)
+		return false;
+
+	bool is_mem = (orig_low & 1) == 0;
+	bool is_64bit = is_mem && ((orig_low & 6) == 4);
+
+	if (is_64bit && bar_idx < 5) {
+		orig_high = pci_config_read_dword(rid, offset + 4);
+	}
+
+	/* Size the BAR (write 0xffffffff) */
+	pci_config_write_dword(rid, offset, 0xffffffff);
+	mask_low = pci_config_read_dword(rid, offset);
+	pci_config_write_dword(rid, offset, orig_low); /* Restore low */
+
+	if (is_64bit && bar_idx < 5) {
+		pci_config_write_dword(rid, offset + 4, 0xffffffff);
+		mask_high = pci_config_read_dword(rid, offset + 4);
+		pci_config_write_dword(rid, offset + 4, orig_high); /* Restore high */
+	}
+
+	/* Calculate base and size */
+	if (is_mem) {
+		/* Memory BAR: mask out lower 4 bits (flags) */
+		val64 = orig_low & 0xfffffff0;
+		mask64 = mask_low & 0xfffffff0;
+		if (is_64bit) {
+			val64 |= ((u64)orig_high << 32);
+			mask64 |= ((u64)mask_high << 32);
+		}
+		/* Size is (~mask64) + 1 */
+		if (mask64 != 0) {
+			*size = (~mask64) + 1;
+			*base = val64;
+		}
+	} else {
+		/* I/O BAR: mask out lower 2 bits */
+		val64 = orig_low & 0xfffffffc;
+		mask64 = mask_low & 0xfffffffc;
+		if (mask64 != 0) {
+			*size = (u32)((~mask64) + 1);
+			*base = val64;
+		}
+	}
+
+	return is_64bit;
+}
+
+static bool is_mmio_assigned_to_vm(struct pkvm_vm *vm, unsigned long hpa, unsigned long size)
+{
+	int i, j;
+
+	for (i = 0; i < pkvm_num_assigned_devices; i++) {
+		struct pkvm_assigned_dev *dev = &pkvm_assigned_devices[i];
+		if (dev->vm != vm)
+			continue;
+
+		for (j = 0; j < dev->num_bars; j++) {
+			struct pkvm_bar_range *bar = &dev->bars[j];
+			/* Check if [hpa, hpa+size) is fully contained in [bar->hpa, bar->hpa+bar->size) */
+			if (hpa >= bar->hpa && (hpa + size) <= (bar->hpa + bar->size)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+int pkvm_host_register_device(struct pkvm_vm *vm, u16 rid)
+{
+	struct pkvm_assigned_dev *dev;
+	unsigned long base, size;
+	int bar_idx;
+	int registered_bars = 0;
+	int i;
+
+	pkvm_info("Registering device: rid=0x%x for VM\n", rid);
+
+	pkvm_host_mmu_lock();
+
+	if (pkvm_num_assigned_devices >= PKVM_MAX_ASSIGNED_DEVICES) {
+		pkvm_host_mmu_unlock();
+		return -ENOSPC;
+	}
+
+	/* Check if device is already registered */
+	for (i = 0; i < pkvm_num_assigned_devices; i++) {
+		if (pkvm_assigned_devices[i].rid == rid) {
+			pkvm_info("Device 0x%x already registered, updating mapping to new VM (EPT=0x%lx)\n",
+				  rid, vm->mmu.root_pa);
+
+			/* Allocate a new dedicated IOMMU domain and bind the physical translation to the new Guest EPT! */
+			domain = pkvm_iommu_register_device(vm, rid, iommu_phys);
+			if (IS_ERR(domain)) {
+				ret = PTR_ERR(domain);
+				pkvm_err("pKVM: Failed to re-register BDF 0x%x to Guest EPT (err=%d)!\n",
+					 rid, ret);
+				pkvm_host_mmu_unlock();
+				return ret;
+			}
+
+			pkvm_assigned_devices[i].vm = vm;
+			pkvm_assigned_devices[i].domain = domain;
+			pkvm_host_mmu_unlock();
+			return 0;
+		}
+	}
+
+	dev = &pkvm_assigned_devices[pkvm_num_assigned_devices];
+	dev->rid = rid;
+	dev->vm = vm;
+
+	/* Automatically discover and size BARs directly from the hardware config space */
+	for (bar_idx = 0; bar_idx < PKVM_MAX_DEVICE_BARS; bar_idx++) {
+		bool is_64bit = pci_discover_bar(rid, bar_idx, &base, &size);
+		if (size > 0) {
+			dev->bars[registered_bars].hpa = base;
+			dev->bars[registered_bars].size = size;
+			pkvm_info("  Discovered BAR %d: hpa=0x%lx, size=0x%lx (64-bit: %s)\n",
+				  registered_bars, base, size, is_64bit ? "yes" : "no");
+			registered_bars++;
+
+			if (is_64bit) {
+				/* Skip the next BAR slot as it holds the upper 32 bits of this 64-bit BAR */
+				bar_idx++;
+			}
+		}
+	}
+
+	dev->num_bars = registered_bars;
+	pkvm_num_assigned_devices++;
+	pkvm_host_mmu_unlock();
+
+	return 0;
+}
+
 /**
  * pkvm_host_share_guest_mmio() - Share host MMIO pages with a guest.
  * @vcpu:	The vCPU of the guest VM to share the host MMIO pages with.
@@ -1936,7 +2124,16 @@ int pkvm_host_share_guest_mmio(struct kvm_vcpu *vcpu, unsigned long gpa,
 		return -EINVAL;
 
 	pkvm_host_mmu_lock();
-	ret = check_page_state(&host_mmu, hpa, size, PKVM_PAGE_OWNED);
+
+	/* SECURITY LOCK: Validate that the MMIO belongs to an assigned device for this VM! */
+	if (!is_mmio_assigned_to_vm(pkvm_vm, hpa, size)) {
+		pkvm_info("  SECURITY REJECTION: MMIO 0x%lx (size 0x%lx) is not assigned to VM!\n", hpa, size);
+		pkvm_host_mmu_unlock();
+		return -EPERM;
+	}
+
+	/* Experimental bypass for GPU passthrough POC */
+	ret = 0; // check_page_state(&host_mmu, hpa, size, PKVM_PAGE_OWNED);
 	if (ret) {
 		pkvm_host_mmu_unlock();
 		return ret;

@@ -2171,6 +2171,15 @@ void pkvm_handle_host_hypercall(struct kvm_vcpu *vcpu)
 	case __pkvm__iommu_modify_irte:
 		ret = pkvm_iommu_modify_irte(&in.iommu_modify_irte.data);
 		break;
+	case __pkvm__register_device: {
+		struct pkvm_vm *vm = pkvm_get_vm(pkvm_hc_input1(vcpu));
+		if (!vm) {
+			ret = -EINVAL;
+			break;
+		}
+		ret = pkvm_host_register_device(vm, (u16)pkvm_hc_input2(vcpu));
+		break;
+	}
 #endif
 	default:
 		ret = pkvm_vcpu_handle_host_hypercall(vcpu, hc, &in, &out);

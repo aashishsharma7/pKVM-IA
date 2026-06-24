@@ -5246,4 +5246,11 @@ err:
 
 	return ret;
 }
+
+u64 intel_iommu_get_reg_phys(struct device *dev)
+{
+	struct intel_iommu *iommu = device_lookup_iommu(dev, NULL, NULL);
+	return iommu ? iommu->reg_phys : 0;
+}
+EXPORT_SYMBOL_GPL(intel_iommu_get_reg_phys);
 #endif /* !__PKVM_HYP__ */

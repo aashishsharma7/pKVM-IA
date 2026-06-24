@@ -1698,4 +1698,11 @@ static inline void iopf_group_response(struct iopf_group *group,
 {
 }
 #endif /* CONFIG_IOMMU_IOPF */
+
+#ifdef CONFIG_INTEL_IOMMU
+u64 intel_iommu_get_reg_phys(struct device *dev);
+#else
+static inline u64 intel_iommu_get_reg_phys(struct device *dev) { return 0; }
+#endif
+
 #endif /* __LINUX_IOMMU_H */

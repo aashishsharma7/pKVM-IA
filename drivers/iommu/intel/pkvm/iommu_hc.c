@@ -634,3 +634,70 @@ unlock:
 
 	return ret;
 }
+
+static struct dmar_domain *pkvm_iommu_alloc_guest_domain(struct intel_iommu *iommu, struct pkvm_vm *vm)
+{
+	struct alloc_domain_data data = { 0 };
+	bool need_iotlb_sync_map;
+
+	data.phys = iommu->reg_phys;
+	data.use_first_level = 0; /* Second-stage translation */
+	data.iommu_superpage = iommu_superpage_capability(iommu, 0);
+	data.iommu_coherency = iommu_paging_structure_coherency(iommu);
+	data.agaw = iommu->agaw;
+	data.gaw = agaw_to_width(iommu->agaw);
+	if (data.gaw > cap_mgaw(iommu->cap))
+		data.gaw = cap_mgaw(iommu->cap);
+	data.max_addr = __DOMAIN_MAX_ADDR(data.gaw);
+	data.pgd_gpa = vm->mmu.root_pa;
+	data.pkvm_nested = 0;
+
+	need_iotlb_sync_map = cap_caching_mode(iommu->cap);
+
+	return pkvm_alloc_iommu_domain(&data, need_iotlb_sync_map);
+}
+
+struct dmar_domain *pkvm_iommu_register_device(struct pkvm_vm *vm, u16 rid, u64 iommu_phys)
+{
+	struct intel_iommu *iommu;
+	struct dmar_domain *domain;
+	struct device_domain_info info = { 0 };
+	u16 vm_handle = vm->shared_kvm->arch.pkvm.handle;
+	u8 bus = PCI_BUS_NUM(rid);
+	u8 devfn = rid & 0xFF;
+	int ret;
+
+	/* 1. Find the physical IOMMU from the host-passed register base */
+	iommu = iommu_from_phys(iommu_phys);
+	if (!iommu) {
+		pkvm_err("pKVM: Invalid physical IOMMU base address 0x%llx!\n", iommu_phys);
+		return ERR_PTR(-EINVAL);
+	}
+
+	/* 2. Allocate a dedicated dmar_domain bound to the Guest EPT */
+	domain = pkvm_iommu_alloc_guest_domain(iommu, vm);
+	if (IS_ERR(domain)) {
+		pkvm_err("pKVM: Failed to allocate IOMMU domain for BDF 0x%x: %ld\n",
+			 rid, PTR_ERR(domain));
+		return domain;
+	}
+
+	/* 3. Construct the temporary stack device_domain_info */
+	info.bus = bus;
+	info.devfn = devfn;
+	info.iommu = iommu;
+
+	/* 4. Program the physical hardware IOMMU context entry directly (Legacy Mode!) */
+	pkvm_info("pKVM: Programming physical IOMMU Context Entry for BDF 0x%x to Guest EPT (root=0x%lx, did=0x%x)\n",
+		  rid, vm->mmu.root_pa, vm_handle);
+
+	ret = domain_context_mapping_one(domain, iommu, &info, vm_handle, bus, devfn);
+	if (ret) {
+		pkvm_err("pKVM: Failed to setup physical context mapping for BDF 0x%x: %d\n",
+			 rid, ret);
+		/* Note: Domain is left in the global hashtable but registration fails. */
+		return ERR_PTR(ret);
+	}
+
+	return domain;
+}

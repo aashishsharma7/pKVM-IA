@@ -80,7 +80,6 @@ static bool kvm_vfio_file_is_valid(struct file *file)
 	return ret;
 }
 
-#ifdef CONFIG_SPAPR_TCE_IOMMU
 static struct iommu_group *kvm_vfio_file_iommu_group(struct file *file)
 {
 	struct iommu_group *(*fn)(struct file *file);
@@ -97,6 +96,39 @@ static struct iommu_group *kvm_vfio_file_iommu_group(struct file *file)
 	return ret;
 }
 
+static bool kvm_vfio_file_is_group(struct file *file)
+{
+	bool (*fn)(struct file *file);
+	bool ret;
+
+	fn = symbol_get(vfio_file_is_group);
+	if (!fn)
+		return false;
+
+	ret = fn(file);
+
+	symbol_put(vfio_file_is_group);
+
+	return ret;
+}
+
+static struct vfio_device *kvm_vfio_device_from_file(struct file *file)
+{
+	struct vfio_device *(*fn)(struct file *file);
+	struct vfio_device *ret;
+
+	fn = symbol_get(vfio_device_from_file);
+	if (!fn)
+		return NULL;
+
+	ret = fn(file);
+
+	symbol_put(vfio_device_from_file);
+
+	return ret;
+}
+
+#ifdef CONFIG_SPAPR_TCE_IOMMU
 static void kvm_spapr_tce_release_vfio_group(struct kvm *kvm,
 					     struct kvm_vfio_file *kvf)
 {
@@ -140,6 +172,46 @@ static void kvm_vfio_update_coherency(struct kvm_device *dev)
 	}
 }
 
+#ifdef CONFIG_PKVM_X86
+#include <asm/kvm_pkvm.h>
+#include <linux/pci.h>
+#include <linux/iommu.h>
+
+static int kvm_vfio_register_pkvm_device(struct device *dev, void *data)
+{
+	struct kvm *kvm = data;
+	struct pci_dev *pdev;
+	u16 rid;
+	u64 iommu_phys;
+	int ret;
+
+	if (!dev_is_pci(dev))
+		return 0; /* Skip non-PCI devices */
+
+	pdev = to_pci_dev(dev);
+	rid = pci_dev_id(pdev);
+
+	/* Discover the managing IOMMU physical register base! */
+	iommu_phys = intel_iommu_get_reg_phys(dev);
+	if (!iommu_phys) {
+		pr_err("pKVM: Failed to discover physical IOMMU for device %s\n", dev_name(dev));
+		return -ENODEV;
+	}
+
+	pr_info("pKVM: Registering host PCI device %s (BDF=0x%x, iommu_phys=0x%llx) for secure VM %d\n",
+		dev_name(dev), rid, iommu_phys, kvm->arch.pkvm.handle);
+
+	/* Trigger the secure registration hypercall, passing the iommu_phys register base! */
+	ret = pkvm_hypercall(register_device, kvm->arch.pkvm.handle, rid, iommu_phys);
+	if (ret) {
+		pr_err("pKVM: Failed to register device 0x%x with hypervisor: %d\n", rid, ret);
+		return ret; /* Abort iteration on error */
+	}
+
+	return 0;
+}
+#endif
+
 static int kvm_vfio_file_add(struct kvm_device *dev, unsigned int fd)
 {
 	struct kvm_vfio *kv = dev->private;
@@ -176,6 +248,42 @@ static int kvm_vfio_file_add(struct kvm_device *dev, unsigned int fd)
 	list_add_tail(&kvf->node, &kv->file_list);
 
 	kvm_vfio_file_set_kvm(kvf->file, dev->kvm);
+
+#ifdef CONFIG_PKVM_X86
+	if (pkvm_enabled()) {
+		if (kvm_vfio_file_is_group(kvf->file)) {
+			struct iommu_group *group = kvm_vfio_file_iommu_group(kvf->file);
+			if (group) {
+				ret = iommu_group_for_each_dev(group, dev->kvm, kvm_vfio_register_pkvm_device);
+				iommu_group_put(group);
+			} else {
+				pr_err("pKVM: Failed to get IOMMU group from group file, aborting!\n");
+				ret = -EINVAL;
+			}
+		} else {
+			struct vfio_device *vdev = kvm_vfio_device_from_file(kvf->file);
+			if (vdev) {
+				pr_info("pKVM: Discovered direct VFIO device BDF 0x%x (name=%s) from device file\n",
+					pci_dev_id(to_pci_dev(vdev->dev)), dev_name(vdev->dev));
+				ret = kvm_vfio_register_pkvm_device(vdev->dev, dev->kvm);
+			} else {
+				pr_err("pKVM: Failed to resolve VFIO device from device file, aborting!\n");
+				ret = -EINVAL;
+			}
+		}
+
+		if (ret) {
+			/* Abort and clean up if registration fails! */
+			pr_err("pKVM: Security registration failed, aborting device attachment!\n");
+			list_del(&kvf->node);
+			kvm_vfio_file_set_kvm(kvf->file, NULL);
+			fput(kvf->file); /* Release our get_file ref! */
+			kfree(kvf);
+			goto out_unlock;
+		}
+	}
+#endif
+
 	kvm_vfio_update_coherency(dev);
 
 out_unlock:

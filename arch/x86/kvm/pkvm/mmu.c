@@ -2024,15 +2024,17 @@ static bool is_mmio_assigned_to_vm(struct pkvm_vm *vm, unsigned long hpa, unsign
 	return false;
 }
 
-int pkvm_host_register_device(struct pkvm_vm *vm, u16 rid)
+int pkvm_host_register_device(struct pkvm_vm *vm, u16 rid, u64 iommu_phys)
 {
 	struct pkvm_assigned_dev *dev;
+	struct dmar_domain *domain;
 	unsigned long base, size;
 	int bar_idx;
 	int registered_bars = 0;
 	int i;
+	int ret;
 
-	pkvm_info("Registering device: rid=0x%x for VM\n", rid);
+	pkvm_info("Registering device: rid=0x%x for VM (iommu_phys=0x%llx)\n", rid, iommu_phys);
 
 	pkvm_host_mmu_lock();
 
@@ -2084,6 +2086,17 @@ int pkvm_host_register_device(struct pkvm_vm *vm, u16 rid)
 			}
 		}
 	}
+
+	/* Allocate a dedicated IOMMU domain and bind the physical translation to Guest EPT! */
+	domain = pkvm_iommu_register_device(vm, rid, iommu_phys);
+	if (IS_ERR(domain)) {
+		ret = PTR_ERR(domain);
+		pkvm_err("pKVM: Failed to allocate IOMMU domain/bind BDF 0x%x to Guest EPT (err=%d)!\n",
+			 rid, ret);
+		pkvm_host_mmu_unlock();
+		return ret;
+	}
+	dev->domain = domain;
 
 	dev->num_bars = registered_bars;
 	pkvm_num_assigned_devices++;

@@ -2177,7 +2177,7 @@ void pkvm_handle_host_hypercall(struct kvm_vcpu *vcpu)
 			ret = -EINVAL;
 			break;
 		}
-		ret = pkvm_host_register_device(vm, (u16)pkvm_hc_input2(vcpu));
+		ret = pkvm_host_register_device(vm, (u16)pkvm_hc_input2(vcpu), (u64)pkvm_hc_input3(vcpu));
 		break;
 	}
 #endif

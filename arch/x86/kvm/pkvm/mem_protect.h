@@ -110,15 +110,19 @@ struct pkvm_bar_range {
 	unsigned long size;
 };
 
+struct dmar_domain;
+
 struct pkvm_assigned_dev {
 	u16 rid;
 	int num_bars;
 	struct pkvm_bar_range bars[PKVM_MAX_DEVICE_BARS];
 	struct pkvm_vm *vm;
 	struct list_head node;
+	struct dmar_domain *domain;
 };
 
 struct pkvm_vm;
-int pkvm_host_register_device(struct pkvm_vm *vm, u16 rid);
+int pkvm_host_register_device(struct pkvm_vm *vm, u16 rid, u64 iommu_phys);
+struct dmar_domain *pkvm_iommu_register_device(struct pkvm_vm *vm, u16 rid, u64 iommu_phys);
 
 #endif /* __PKVM_X86_MEM_PROTECT_H */

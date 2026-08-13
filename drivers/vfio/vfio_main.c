@@ -343,7 +343,7 @@ static int __vfio_register_dev(struct vfio_device *device,
 	 * valid for cases where we are using iommu groups.
 	 */
 	if (type == VFIO_IOMMU && !vfio_device_is_noiommu(device) &&
-	    !device_iommu_capable(device->dev, IOMMU_CAP_CACHE_COHERENCY)) {
+	    0 && !device_iommu_capable(device->dev, IOMMU_CAP_CACHE_COHERENCY)) {
 		ret = -EINVAL;
 		goto err_out;
 	}

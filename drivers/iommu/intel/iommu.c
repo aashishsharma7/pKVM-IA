@@ -4476,7 +4476,7 @@ static int intel_iommu_iotlb_sync_map(struct iommu_domain *domain,
 	 * Host controls first level page table in pKVM's nested mode, but since pKVM
 	 * assumes !rwbf_required(), iotlb_sync on map is not required and not supported.
 	 */
-	BUG_ON(pkvm_enabled() && dmar_domain->pkvm_nested && dmar_domain->iotlb_sync_map);
+	BUG_ON(pkvm_enabled() && domain_pkvm_nested(dmar_domain) && dmar_domain->iotlb_sync_map);
 
 	/* pKVM performs iotlb flush after map if required */
 	if (!pkvm_enabled() && dmar_domain->iotlb_sync_map)

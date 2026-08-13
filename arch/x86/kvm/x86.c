@@ -8438,6 +8438,11 @@ static int write_exit_mmio(struct kvm_vcpu *vcpu, gpa_t gpa,
 	struct kvm_mmio_fragment *frag = &vcpu->mmio_fragments[0];
 
 	memcpy(vcpu->run->mmio.data, frag->data, min(8u, frag->len));
+	if (gpa >= 0xb0000000 && gpa < 0xc0000000) {
+		u32 wval = 0;
+		memcpy(&wval, vcpu->run->mmio.data, min(bytes, 4));
+		pr_info("pKVM: Guest ECAM WRITE to GPA 0x%llx, writing: 0x%x (size %d)\n", gpa, wval, bytes);
+	}
 	return X86EMUL_CONTINUE;
 }
 
@@ -12246,8 +12251,14 @@ static int complete_emulated_mmio(struct kvm_vcpu *vcpu)
 	/* Complete previous fragment */
 	frag = &vcpu->mmio_fragments[vcpu->mmio_cur_fragment];
 	len = min(8u, frag->len);
-	if (!vcpu->mmio_is_write)
+	if (!vcpu->mmio_is_write) {
 		memcpy(frag->data, run->mmio.data, len);
+		if (frag->gpa >= 0xb0000000 && frag->gpa < 0xc0000000) {
+			u32 rval = 0;
+			memcpy(&rval, frag->data, min(len, 4u));
+			pr_info("pKVM: Guest ECAM READ from GPA 0x%llx, QEMU returned: 0x%x (size %d)\n", frag->gpa, rval, len);
+		}
+	}
 
 	if (frag->len <= 8) {
 		/* Switch to the next fragment. */
@@ -14646,8 +14657,14 @@ static int complete_sev_es_emulated_mmio(struct kvm_vcpu *vcpu)
 	/* Complete previous fragment */
 	frag = &vcpu->mmio_fragments[vcpu->mmio_cur_fragment];
 	len = min(8u, frag->len);
-	if (!vcpu->mmio_is_write)
+	if (!vcpu->mmio_is_write) {
 		memcpy(frag->data, run->mmio.data, len);
+		if (frag->gpa >= 0xb0000000 && frag->gpa < 0xc0000000) {
+			u32 rval = 0;
+			memcpy(&rval, frag->data, min(len, 4u));
+			pr_info("pKVM: Guest ECAM READ from GPA 0x%llx, QEMU returned: 0x%x (size %d)\n", frag->gpa, rval, len);
+		}
+	}
 
 	if (frag->len <= 8) {
 		/* Switch to the next fragment. */
@@ -15109,9 +15126,89 @@ int pkvm_emulate_hypercall(struct kvm_vcpu *vcpu)
 		ret = pkvm_guest_unshare_host(vcpu, a0, a1);
 		break;
 	case PKVM_GHC_IOREAD:
-	case PKVM_GHC_IOWRITE:
-		/* Hypercall for MMIO accessing should be forwarded to the host */
+	case PKVM_GHC_IOWRITE: {
+		bool is_write = (nr == PKVM_GHC_IOWRITE);
+		unsigned long gpa = a0;
+		/* unsigned long size = a1; */
+		unsigned long val = a2;
+		
+		/* 
+		 * TODO(security): Replace this hardcoded ECAM base with the pvmfw-verified 
+		 * address from the ACPI sanitization block.
+		 */
+		#define PKVM_VIRT_ECAM_BASE 0xB0000000ULL
+		#define PKVM_VIRT_ECAM_SIZE (256 * 1024 * 1024) /* 256 MB */
+
+		if (gpa >= PKVM_VIRT_ECAM_BASE && 
+		    gpa < (PKVM_VIRT_ECAM_BASE + PKVM_VIRT_ECAM_SIZE)) {
+			
+			unsigned long ecam_offset = gpa - PKVM_VIRT_ECAM_BASE;
+			unsigned long offset = gpa & 0xFFF; /* 4KB per function */
+			u8 bus = (ecam_offset >> 20) & 0xFF;
+			u8 dev = (ecam_offset >> 15) & 0x1F;
+			u8 func = (ecam_offset >> 12) & 0x07;
+			u16 virtual_rid = (bus << 8) | (dev << 3) | func;
+
+			struct pkvm_assigned_dev *adev = 
+				pkvm_get_assigned_device_by_vrid(pkvm_vcpu->pkvm_vm, virtual_rid);
+				
+			if (adev) {
+				if (offset >= 0x10 && offset <= 0x24) { /* BAR0 - BAR5 */
+					int bar_idx = (offset - 0x10) / 4;
+					if (is_write) {
+						adev->guest_bars[bar_idx] = val;
+					}
+				} else if (offset == 0x30) {
+					if (is_write) {
+						adev->guest_bars[8] = val;
+						if (val & 0x1) {
+							int j;
+							for (j = 0; j < adev->num_bars; j++) {
+								if (adev->bars[j].pci_idx == 8) {
+									u64 gpa = val & ~0x7FFULL;
+									if (gpa != 0) {
+										pr_info("v.pKVM: Guest dynamically bound ROM BAR PA 0x%lx -> GPA 0x%llx\n", adev->bars[j].hpa, gpa);
+										pkvm_host_share_guest_mmio(vcpu, gpa, adev->bars[j].hpa, adev->bars[j].size, true);
+									}
+								}
+							}
+						}
+					}
+				} else if (offset == 0x04 && is_write && (val & 0x02)) {
+					int j;
+					for (j = 0; j < adev->num_bars; j++) {
+						int idx = adev->bars[j].pci_idx;
+						if (idx >= 0 && idx < PKVM_MAX_DEVICE_BARS) {
+							u64 gpa = adev->guest_bars[idx];
+							if (adev->bars[j].is_64bit && (idx + 1 < PKVM_MAX_DEVICE_BARS)) {
+								gpa |= ((u64)adev->guest_bars[idx + 1] << 32);
+							}
+							
+							if (idx == 8) {
+								if (!(gpa & 1)) continue; 
+								gpa &= ~0x7FFULL;
+							} else {
+								gpa &= ~(adev->bars[j].is_64bit ? 0xFULL : 0xF);
+							}
+							
+							if (gpa != 0 && gpa != 0xFFFFFFFFFFFFFFF0ULL && gpa != 0xFFFFFFF0ULL) {
+								if ((adev->guest_bars[idx] & 1) == 0 || idx == 8) {
+									pr_info("pKVM: Guest bound ECAM BAR%d PA 0x%lx -> GPA 0x%llx\n", idx, adev->bars[j].hpa, gpa);
+									pkvm_host_share_guest_mmio(vcpu, gpa, adev->bars[j].hpa, adev->bars[j].size, true);
+								}
+							}
+						}
+					}
+				}
+				
+				/* For non-BAR accesses (Vendor ID, Status, etc), forward to crosvm */
+				return 0;
+		}
+		}
+
+		/* Hypercall for non-ECAM MMIO should be forwarded to the host as usual */
 		return 0;
+	}
 	case PKVM_GHC_START_CPU:
 		ret = pkvm_start_secondary_vcpu(vcpu->kvm, a0, a1);
 		if (!ret) {

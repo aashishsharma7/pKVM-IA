@@ -16,6 +16,8 @@ extern size_t kvm_vcpu_sz;
 
 /* Represents a guest vCPU. */
 struct pkvm_vcpu {
+	/* Cached PCI config address port for IO port emulation */
+	u32 pci_config_addr_pkvm;
 	/* Point to the kvm_vcpu structure owned by the host */
 	struct kvm_vcpu *shared_vcpu;
 	/* Point to the lapic regs page owned by the host */

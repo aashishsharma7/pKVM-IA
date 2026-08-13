@@ -103,18 +103,22 @@ int pkvm_guest_unshare_host(struct kvm_vcpu *vcpu, unsigned long gpa,
 int pkvm_host_use_dma(unsigned long phys, unsigned long size);
 void pkvm_host_unuse_dma(unsigned long phys, unsigned long size);
 
-#define PKVM_MAX_DEVICE_BARS 6
+#define PKVM_MAX_DEVICE_BARS 9
 
 struct pkvm_bar_range {
 	unsigned long hpa;
 	unsigned long size;
+bool is_64bit;
+int pci_idx;
 };
 
 struct dmar_domain;
 
 struct pkvm_assigned_dev {
 	u16 rid;
+	u16 virtual_rid;
 	int num_bars;
+unsigned long guest_bars[PKVM_MAX_DEVICE_BARS];
 	struct pkvm_bar_range bars[PKVM_MAX_DEVICE_BARS];
 	struct pkvm_vm *vm;
 	struct list_head node;
@@ -122,7 +126,9 @@ struct pkvm_assigned_dev {
 };
 
 struct pkvm_vm;
+struct pkvm_assigned_dev *pkvm_get_assigned_device_by_vrid(struct pkvm_vm *vm, u16 virtual_rid);
 int pkvm_host_register_device(struct pkvm_vm *vm, u16 rid, u64 iommu_phys);
 struct dmar_domain *pkvm_iommu_register_device(struct pkvm_vm *vm, u16 rid, u64 iommu_phys);
 
+bool pkvm_is_bar_hpa(struct pkvm_vm *vm, unsigned long hpa, unsigned long size);
 #endif /* __PKVM_X86_MEM_PROTECT_H */

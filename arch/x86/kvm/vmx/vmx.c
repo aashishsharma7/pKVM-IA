@@ -5904,6 +5904,82 @@ static int handle_io(struct kvm_vcpu *vcpu)
 		}
 	}
 
+	/* Intercept PCI config space I/O ports for pKVM assigned devices */
+	{
+		unsigned long exit_qual = vmx_get_exit_qual(vcpu);
+		unsigned port = exit_qual >> 16;
+		int in = (exit_qual & 8) != 0;
+		struct pkvm_vcpu *pvcpu = to_pkvm_vcpu(vcpu);
+		if (port == 0xCF8 && !in) {
+			pvcpu->pci_config_addr_pkvm = kvm_rax_read(vcpu);
+			/* Forward to host so QEMU knows what address is being selected */
+		} else if (port == 0xCFC && !in) {
+			u32 addr = pvcpu->pci_config_addr_pkvm;
+			if (addr & 0x80000000) {
+				u8 bus = (addr >> 16) & 0xFF;
+				u8 dev = (addr >> 11) & 0x1F;
+				u8 func = (addr >> 8) & 0x7;
+				u8 offset = addr & 0xFC;
+				u16 vrid = (bus << 8) | (dev << 3) | func;
+				struct pkvm_assigned_dev *adev = pkvm_get_assigned_device_by_vrid(pvcpu->pkvm_vm, vrid);
+					if (adev) {
+						if (offset >= 0x10 && offset <= 0x24) { /* BAR0 - BAR5 */
+							u32 val = kvm_rax_read(vcpu);
+							int bar_idx = (offset - 0x10) / 4;
+							adev->guest_bars[bar_idx] = val;
+						} else if (offset == 0x30) { /* Expansion ROM BAR */
+							u32 val = kvm_rax_read(vcpu);
+							adev->guest_bars[8] = val;
+							
+							/* Trigger immediate mapping if ROM Enable bit (0) is explicitly set */
+							if (val & 0x1) {
+								int j;
+								for (j = 0; j < adev->num_bars; j++) {
+									if (adev->bars[j].pci_idx == 8) {
+										u64 gpa = val & ~0x7FFULL;
+										if (gpa != 0) {
+											pr_info("v.pKVM: Guest bound ROM BAR PA 0x%lx -> GPA 0x%llx\n", adev->bars[j].hpa, gpa);
+											pkvm_host_share_guest_mmio(vcpu, gpa, adev->bars[j].hpa, adev->bars[j].size, true);
+										}
+									}
+								}
+							}
+						} else if (offset == 0x04) {
+							u32 val = kvm_rax_read(vcpu);
+							if (val & 0x02) {
+								int j;
+								for (j = 0; j < adev->num_bars; j++) {
+									int idx = adev->bars[j].pci_idx;
+									if (idx >= 0 && idx < PKVM_MAX_DEVICE_BARS) {
+										u64 gpa = adev->guest_bars[idx];
+										if (adev->bars[j].is_64bit && (idx + 1 < PKVM_MAX_DEVICE_BARS)) {
+											gpa |= ((u64)adev->guest_bars[idx + 1] << 32);
+										}
+										
+										if (idx == 8) {
+											/* ROM BAR uses Bit 0 for Enable and Bit 1-10 are reserved/read-only */
+											if (!(gpa & 1)) continue; /* If ROM isn't enabled, skip */
+											gpa &= ~0x7FFULL;
+										} else {
+											gpa &= ~(adev->bars[j].is_64bit ? 0xFULL : 0xF);
+										}
+										
+										if (gpa != 0 && gpa != 0xFFFFFFFFFFFFFFF0ULL && gpa != 0xFFFFFFF0ULL) {
+											if ((adev->guest_bars[idx] & 1) == 0) {
+												pr_info("v.pKVM: Guest bound MMIO BAR%d PA 0x%lx -> GPA 0x%llx\n", idx, adev->bars[j].hpa, gpa);
+												pkvm_host_share_guest_mmio(vcpu, gpa, adev->bars[j].hpa, adev->bars[j].size, true);
+											} else {
+												pr_info("v.pKVM: Guest bound PIO BAR%d (Ignored for MMIO) PA 0x%lx\n", idx, adev->bars[j].hpa);
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+			}
+		}
+	}
 	return 0;
 #endif
 }

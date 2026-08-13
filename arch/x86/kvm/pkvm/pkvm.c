@@ -1773,10 +1773,17 @@ static int pkvm_vm_mmu_map(unsigned long gpa, unsigned long hpa,
 
 		ret = pkvm_host_donate_guest(vcpu, gpa, hpa, size);
 	} else {
-		if (is_mmio_range(hpa, size))
-			ret = pkvm_host_share_guest_mmio(vcpu, gpa, hpa, size, writable);
-		else
+		if (is_mmio_range(hpa, size)) {
+			if (pkvm_is_bar_hpa(to_pkvm_vcpu(vcpu)->pkvm_vm, hpa, size)) {
+				pr_info("pKVM: QEMU mapping SKIPPED for BAR at GPA 0x%lx (size: 0x%lx)\n", gpa, size);
+				ret = 0;
+			} else {
+				pr_info("pKVM: QEMU MMIO memslot map requested at GPA 0x%lx (size: 0x%lx)\n", gpa, size);
+				ret = pkvm_host_share_guest_mmio(vcpu, gpa, hpa, size, writable);
+			}
+		} else {
 			ret = pkvm_host_share_guest(vcpu, gpa, hpa, size, writable);
+		}
 	}
 
 	return ret;
@@ -1787,6 +1794,10 @@ static int pkvm_vm_mmu_unmap(int vm_handle, unsigned long gpa,
 {
 	struct pkvm_vm *pkvm_vm;
 	int ret;
+
+	if (gpa >= 0xf0000000 && size != ~0UL) {
+		pr_info("pKVM: QEMU MMIO memslot UNMAP requested at GPA 0x%lx (size: 0x%lx)\n", gpa, size);
+	}
 
 	pkvm_vm = pkvm_get_vm(vm_handle);
 	if (!pkvm_vm)

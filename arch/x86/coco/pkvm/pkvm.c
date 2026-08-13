@@ -55,76 +55,74 @@ static int pkvm_virt_mmio(int size, bool write, unsigned long vaddr, unsigned lo
 
 	paddr = (pte_pfn(*pte) << PAGE_SHIFT) | (vaddr & ~page_level_mask(level));
 
-	if (write)
-		kvm_hypercall3(PKVM_GHC_IOWRITE, paddr, size, *val);
-	else
-		*val = kvm_hypercall2(PKVM_GHC_IOREAD, paddr, size);
-
-	return 0;
+	if (paddr >= 0xb0000000 && paddr < 0xc0000000) {
+		if (write)
+			kvm_hypercall3(PKVM_GHC_IOWRITE, paddr, size, *val);
+		else
+			*val = kvm_hypercall2(PKVM_GHC_IOREAD, paddr, size);
+		return 0;
+	}
+	return -1;
 }
 
 static unsigned char pkvm_mmio_readb(const volatile void __iomem *addr)
 {
 	unsigned long val;
-
-	if (pkvm_virt_mmio(1, false, (unsigned long)addr, &val))
-		return 0xff;
-	return val;
+	if (pkvm_virt_mmio(1, false, (unsigned long)addr, &val) == 0)
+		return val;
+	return *(volatile unsigned char __force *)addr;
 }
 
 static unsigned short pkvm_mmio_readw(const volatile void __iomem *addr)
 {
 	unsigned long val;
-
-	if (pkvm_virt_mmio(2, false, (unsigned long)addr, &val))
-		return 0xffff;
-	return val;
+	if (pkvm_virt_mmio(2, false, (unsigned long)addr, &val) == 0)
+		return val;
+	return *(volatile unsigned short __force *)addr;
 }
 
 static unsigned int pkvm_mmio_readl(const volatile void __iomem *addr)
 {
 	unsigned long val;
-
-	if (pkvm_virt_mmio(4, false, (unsigned long)addr, &val))
-		return 0xffffffff;
-	return val;
+	if (pkvm_virt_mmio(4, false, (unsigned long)addr, &val) == 0)
+		return val;
+	return *(volatile unsigned int __force *)addr;
 }
 
 static u64 pkvm_mmio_readq(const volatile void __iomem *addr)
 {
 	unsigned long val;
-
-	if (pkvm_virt_mmio(8, false, (unsigned long)addr, &val))
-		return 0xffffffffffffffff;
-	return val;
+	if (pkvm_virt_mmio(8, false, (unsigned long)addr, &val) == 0)
+		return val;
+	return *(volatile u64 __force *)addr;
 }
 
-static void pkvm_mmio_writeb(unsigned char v, volatile void __iomem *addr)
+static void pkvm_mmio_writeb(u8 v, volatile void __iomem *addr)
 {
 	unsigned long val = v;
-
-	pkvm_virt_mmio(1, true, (unsigned long)addr, &val);
+	if (pkvm_virt_mmio(1, true, (unsigned long)addr, &val) != 0)
+		*(volatile u8 __force *)addr = v;
 }
 
-static void pkvm_mmio_writew(unsigned short v, volatile void __iomem *addr)
+static void pkvm_mmio_writew(u16 v, volatile void __iomem *addr)
 {
 	unsigned long val = v;
-
-	pkvm_virt_mmio(2, true, (unsigned long)addr, &val);
+	if (pkvm_virt_mmio(2, true, (unsigned long)addr, &val) != 0)
+		*(volatile u16 __force *)addr = v;
 }
 
-static void pkvm_mmio_writel(unsigned int v, volatile void __iomem *addr)
+static void pkvm_mmio_writel(u32 v, volatile void __iomem *addr)
 {
 	unsigned long val = v;
-
-	pkvm_virt_mmio(4, true, (unsigned long)addr, &val);
+	if (pkvm_virt_mmio(4, true, (unsigned long)addr, &val) != 0)
+		*(volatile u32 __force *)addr = v;
 }
 
 static void pkvm_mmio_writeq(u64 v, volatile void __iomem *addr)
 {
 	unsigned long val = v;
-
-	pkvm_virt_mmio(8, true, (unsigned long)addr, &val);
+	if (pkvm_virt_mmio(8, true, (unsigned long)addr, &val) != 0)
+		*(volatile u64 __force *)addr = v;
 }
 
 static int pkvm_wakeup_secondary_cpu(u32 apic_id, unsigned long start_ip, unsigned int cpu)
@@ -134,7 +132,7 @@ static int pkvm_wakeup_secondary_cpu(u32 apic_id, unsigned long start_ip, unsign
 
 __init void pkvm_guest_init_coco(void)
 {
-	cc_vendor = CC_VENDOR_PKVM;
+	//cc_vendor = CC_VENDOR_PKVM;
 
 	static_branch_enable(&pkvm_guest_detected);
 

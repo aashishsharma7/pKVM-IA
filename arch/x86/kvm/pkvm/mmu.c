@@ -2024,6 +2024,17 @@ static bool is_mmio_assigned_to_vm(struct pkvm_vm *vm, unsigned long hpa, unsign
 	return false;
 }
 
+struct pkvm_assigned_dev *pkvm_get_assigned_device_by_vrid(struct pkvm_vm *vm, u16 virtual_rid)
+{
+	int i;
+	for (i = 0; i < pkvm_num_assigned_devices; i++) {
+		struct pkvm_assigned_dev *dev = &pkvm_assigned_devices[i];
+		if (dev->vm == vm && dev->virtual_rid == virtual_rid)
+			return dev;
+	}
+	return NULL;
+}
+
 int pkvm_host_register_device(struct pkvm_vm *vm, u16 rid, u64 iommu_phys)
 {
 	struct pkvm_assigned_dev *dev;
@@ -2068,6 +2079,7 @@ int pkvm_host_register_device(struct pkvm_vm *vm, u16 rid, u64 iommu_phys)
 
 	dev = &pkvm_assigned_devices[pkvm_num_assigned_devices];
 	dev->rid = rid;
+	dev->virtual_rid = 0x10; // Hardcoded for POC (bus 0, dev 2, fn 0)
 	dev->vm = vm;
 
 	/* Automatically discover and size BARs directly from the hardware config space */
@@ -2076,6 +2088,8 @@ int pkvm_host_register_device(struct pkvm_vm *vm, u16 rid, u64 iommu_phys)
 		if (size > 0) {
 			dev->bars[registered_bars].hpa = base;
 			dev->bars[registered_bars].size = size;
+			dev->bars[registered_bars].is_64bit = is_64bit;
+			dev->bars[registered_bars].pci_idx = bar_idx;
 			pkvm_info("  Discovered BAR %d: hpa=0x%lx, size=0x%lx (64-bit: %s)\n",
 				  registered_bars, base, size, is_64bit ? "yes" : "no");
 			registered_bars++;
@@ -2084,6 +2098,23 @@ int pkvm_host_register_device(struct pkvm_vm *vm, u16 rid, u64 iommu_phys)
 				/* Skip the next BAR slot as it holds the upper 32 bits of this 64-bit BAR */
 				bar_idx++;
 			}
+		}
+	}
+
+	/* Check Expansion ROM at 0x30 */
+	u32 rom_bar = pci_config_read_dword(rid, 0x30);
+	if (rom_bar != 0 && rom_bar != 0xffffffff) {
+		pci_config_write_dword(rid, 0x30, 0xfffff800);
+		u32 rom_sz = pci_config_read_dword(rid, 0x30);
+		pci_config_write_dword(rid, 0x30, rom_bar);
+		u32 rom_sz_mask = ~(rom_sz & ~0x7FF) + 1;
+		if (rom_sz_mask > 0 && rom_sz_mask <= 0x10000000) {
+			dev->bars[registered_bars].hpa = rom_bar & ~0x7FF;
+			dev->bars[registered_bars].size = rom_sz_mask;
+			dev->bars[registered_bars].is_64bit = false;
+			dev->bars[registered_bars].pci_idx = 8;
+			pkvm_info("  Discovered ROM BAR: hpa=0x%lx, size=0x%lx\n", dev->bars[registered_bars].hpa, dev->bars[registered_bars].size);
+			registered_bars++;
 		}
 	}
 
@@ -2169,4 +2200,19 @@ unlock:
 	pkvm_host_mmu_unlock();
 
 	return ret;
+}
+
+bool pkvm_is_bar_hpa(struct pkvm_vm *vm, unsigned long hpa, unsigned long size)
+{
+	int i, j;
+	for (i = 0; i < pkvm_num_assigned_devices; i++) {
+		struct pkvm_assigned_dev *dev = &pkvm_assigned_devices[i];
+		if (dev->vm == vm) {
+			for (j = 0; j < dev->num_bars; j++) {
+				if (dev->bars[j].size > 0 && dev->bars[j].hpa == hpa)
+					return true;
+			}
+		}
+	}
+	return false;
 }

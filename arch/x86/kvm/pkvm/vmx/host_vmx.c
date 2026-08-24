@@ -3,6 +3,7 @@
 #include <linux/memblock.h>
 #include <kvm_emulate.h>
 #include <vmx/x86_ops.h>
+#include <asm/io.h>
 #include "debug.h"
 #include "ept.h"
 #include "host_vmx.h"
@@ -331,6 +332,87 @@ static void fixup_host_vmx(struct vcpu_vmx *vmx)
 	this_cpu_write(host_vcpu_fixup, false);
 }
 
+static void handle_host_io(struct kvm_vcpu *vcpu)
+{
+	struct vcpu_vt *vt = to_vt(vcpu);
+	unsigned long exit_qual = vt->exit_qualification;
+	unsigned port = exit_qual >> 16;
+	int in = (exit_qual & 8) != 0;
+	int size = exit_qual & 7; /* 0: 1-byte, 1: 2-byte, 3: 4-byte */
+
+	if (port == 0xCF8) {
+		if (!in) {
+			if (size == 0)
+				outb((u8)vcpu->arch.regs[VCPU_REGS_RAX], 0xCF8);
+			else if (size == 1)
+				outw((u16)vcpu->arch.regs[VCPU_REGS_RAX], 0xCF8);
+			else
+				outl((u32)vcpu->arch.regs[VCPU_REGS_RAX], 0xCF8);
+		} else {
+			if (size == 0)
+				vcpu->arch.regs[VCPU_REGS_RAX] = (vcpu->arch.regs[VCPU_REGS_RAX] & ~0xFFULL) | inb(0xCF8);
+			else if (size == 1)
+				vcpu->arch.regs[VCPU_REGS_RAX] = (vcpu->arch.regs[VCPU_REGS_RAX] & ~0xFFFFULL) | inw(0xCF8);
+			else
+				vcpu->arch.regs[VCPU_REGS_RAX] = (u64)(u32)inl(0xCF8);
+		}
+	} else if (port >= 0xCFC && port <= 0xCFF) {
+		u32 addr = inl(0xCF8);
+		u8 bus = (addr >> 16) & 0xFF;
+		u8 dev = (addr >> 11) & 0x1F;
+		u8 func = (addr >> 8) & 0x7;
+		u8 offset = (addr & 0xFC) + (port - 0xCFC);
+
+		/* Check if targeting an actively assigned device */
+		if (is_pci_bdf_assigned(bus, dev, func)) {
+			if (!in && offset >= 0x10 && offset <= 0x24) {
+				pkvm_info("pKVM: Blocked Host Port-I/O write to assigned device %02x:%02x.%d BAR (offset 0x%x, val 0x%lx)\n",
+				          bus, dev, func, offset, vcpu->arch.regs[VCPU_REGS_RAX]);
+				/* Suppress hardware write while assigned to protected VM */
+				return;
+			}
+			pkvm_info("pKVM: Host Port-I/O %s %02x:%02x.%d reg 0x%x (val 0x%lx, size %d)\n",
+			          in ? "READ from" : "WRITE to",
+			          bus, dev, func, offset, vcpu->arch.regs[VCPU_REGS_RAX],
+			          size == 0 ? 1 : (size == 1 ? 2 : 4));
+		}
+
+		/* Pass-through all other I/O to hardware */
+		if (!in) {
+			if (size == 0)
+				outb((u8)vcpu->arch.regs[VCPU_REGS_RAX], port);
+			else if (size == 1)
+				outw((u16)vcpu->arch.regs[VCPU_REGS_RAX], port);
+			else
+				outl((u32)vcpu->arch.regs[VCPU_REGS_RAX], port);
+		} else {
+			if (size == 0)
+				vcpu->arch.regs[VCPU_REGS_RAX] = (vcpu->arch.regs[VCPU_REGS_RAX] & ~0xFFULL) | inb(port);
+			else if (size == 1)
+				vcpu->arch.regs[VCPU_REGS_RAX] = (vcpu->arch.regs[VCPU_REGS_RAX] & ~0xFFFFULL) | inw(port);
+			else
+				vcpu->arch.regs[VCPU_REGS_RAX] = (u64)(u32)inl(port);
+		}
+	} else {
+		/* Fallback for other ports if any */
+		if (!in) {
+			if (size == 0)
+				outb((u8)vcpu->arch.regs[VCPU_REGS_RAX], port);
+			else if (size == 1)
+				outw((u16)vcpu->arch.regs[VCPU_REGS_RAX], port);
+			else
+				outl((u32)vcpu->arch.regs[VCPU_REGS_RAX], port);
+		} else {
+			if (size == 0)
+				vcpu->arch.regs[VCPU_REGS_RAX] = (vcpu->arch.regs[VCPU_REGS_RAX] & ~0xFFULL) | inb(port);
+			else if (size == 1)
+				vcpu->arch.regs[VCPU_REGS_RAX] = (vcpu->arch.regs[VCPU_REGS_RAX] & ~0xFFFFULL) | inw(port);
+			else
+				vcpu->arch.regs[VCPU_REGS_RAX] = (u64)(u32)inl(port);
+		}
+	}
+}
+
 void pkvm_host_vmexit_main(struct vcpu_vmx *vmx)
 {
 	struct kvm_vcpu *vcpu = &vmx->vcpu;
@@ -377,6 +459,10 @@ void pkvm_host_vmexit_main(struct vcpu_vmx *vmx)
 		break;
 	case EXIT_REASON_EPT_VIOLATION:
 		pkvm_handle_host_ept_violation(vcpu);
+		break;
+	case EXIT_REASON_IO_INSTRUCTION:
+		handle_host_io(vcpu);
+		skip_instruction = true;
 		break;
 	case EXIT_REASON_PREEMPTION_TIMER:
 		handle_preemption_timer(vcpu);

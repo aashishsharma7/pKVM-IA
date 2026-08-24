@@ -123,6 +123,7 @@ unsigned long guest_bars[PKVM_MAX_DEVICE_BARS];
 	struct pkvm_vm *vm;
 	struct list_head node;
 	struct dmar_domain *domain;
+	bool io_blocked;
 };
 
 struct pkvm_vm;

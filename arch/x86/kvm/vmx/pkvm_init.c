@@ -140,6 +140,7 @@ static __init int pkvm_setup_host_vmcs_config(void)
 		.cpu_based_vm_exec_ctrl_req =
 			CPU_BASED_INTR_WINDOW_EXITING |
 			CPU_BASED_USE_MSR_BITMAPS |
+			CPU_BASED_USE_IO_BITMAPS |
 			CPU_BASED_ACTIVATE_SECONDARY_CONTROLS,
 		.cpu_based_vm_exec_ctrl_opt = 0,
 		.secondary_vm_exec_ctrl_req =
@@ -385,6 +386,9 @@ static __init int pkvm_setup_pcpu(int cpu)
 	return 0;
 }
 
+static void *host_io_bitmap_a;
+static void *host_io_bitmap_b;
+
 static __init int pkvm_setup_host_vcpu(struct kvm *kvm, int cpu)
 {
 	struct vcpu_vmx *vmx;
@@ -410,6 +414,20 @@ static __init int pkvm_setup_host_vcpu(struct kvm *kvm, int cpu)
 	if (!vmx->vmcs01.msr_bitmap) {
 		pr_err("no msr_bitmap page for CPU%d\n", cpu);
 		return -ENOMEM;
+	}
+
+	if (!host_io_bitmap_a) {
+		host_io_bitmap_a = pkvm_sym(pkvm_early_alloc_page)(NULL);
+		host_io_bitmap_b = pkvm_sym(pkvm_early_alloc_page)(NULL);
+		if (host_io_bitmap_a && host_io_bitmap_b) {
+			memset(host_io_bitmap_a, 0, PAGE_SIZE);
+			memset(host_io_bitmap_b, 0, PAGE_SIZE);
+			__set_bit(0xCF8, (unsigned long *)host_io_bitmap_a);
+			__set_bit(0xCFC, (unsigned long *)host_io_bitmap_a);
+			__set_bit(0xCFD, (unsigned long *)host_io_bitmap_a);
+			__set_bit(0xCFE, (unsigned long *)host_io_bitmap_a);
+			__set_bit(0xCFF, (unsigned long *)host_io_bitmap_a);
+		}
 	}
 
 	/* Set msr bitmap to intercept some MSR writing */
@@ -1054,6 +1072,10 @@ static __init void init_execution_control(struct vcpu_vmx *vmx)
 	vmcs_write32(EXCEPTION_BITMAP, 0);
 
 	vmcs_write64(MSR_BITMAP, __pa(vmx->vmcs01.msr_bitmap));
+	if (host_io_bitmap_a && host_io_bitmap_b) {
+		vmcs_write64(IO_BITMAP_A, __pa(host_io_bitmap_a));
+		vmcs_write64(IO_BITMAP_B, __pa(host_io_bitmap_b));
+	}
 
 	/*
 	 * Host VM owns cr0 and cr4 except VMXE bit.

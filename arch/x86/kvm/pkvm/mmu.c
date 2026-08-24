@@ -2035,6 +2035,19 @@ struct pkvm_assigned_dev *pkvm_get_assigned_device_by_vrid(struct pkvm_vm *vm, u
 	return NULL;
 }
 
+bool is_pci_bdf_assigned(u8 bus, u8 dev, u8 func)
+{
+	u16 rid = (bus << 8) | (dev << 3) | func;
+	int i;
+	for (i = 0; i < pkvm_num_assigned_devices; i++) {
+		if (pkvm_assigned_devices[i].rid == rid &&
+		    pkvm_assigned_devices[i].vm != NULL &&
+		    pkvm_assigned_devices[i].io_blocked)
+			return true;
+	}
+	return false;
+}
+
 int pkvm_host_register_device(struct pkvm_vm *vm, u16 rid, u64 iommu_phys)
 {
 	struct pkvm_assigned_dev *dev;
@@ -2081,6 +2094,7 @@ int pkvm_host_register_device(struct pkvm_vm *vm, u16 rid, u64 iommu_phys)
 	dev->rid = rid;
 	dev->virtual_rid = 0x10; // Hardcoded for POC (bus 0, dev 2, fn 0)
 	dev->vm = vm;
+	dev->io_blocked = false;
 
 	/* Automatically discover and size BARs directly from the hardware config space */
 	for (bar_idx = 0; bar_idx < PKVM_MAX_DEVICE_BARS; bar_idx++) {
@@ -2179,6 +2193,18 @@ int pkvm_host_share_guest_mmio(struct kvm_vcpu *vcpu, unsigned long gpa,
 	/* Dynamically unmap BAR from Host Stage-2 EPT */
 	host_mmu_unmap(hpa, size);
 	pkvm_info("pKVM: Dynamically unmapped BAR HPA 0x%lx (size 0x%lx) from Host Stage-2 EPT\n", hpa, size);
+
+	/* Activate host Port-I/O write blocking now that BAR/ECAM is unmapped and protected */
+	{
+		int i;
+		for (i = 0; i < pkvm_num_assigned_devices; i++) {
+			struct pkvm_assigned_dev *adev = &pkvm_assigned_devices[i];
+			if (adev->vm == pkvm_vm && !adev->io_blocked) {
+				adev->io_blocked = true;
+				pkvm_info("pKVM: Activated Host Port-I/O write blocking for device 0x%x\n", adev->rid);
+			}
+		}
+	}
 
 	/* Experimental bypass for GPU passthrough POC */
 	ret = 0; // check_page_state(&host_mmu, hpa, size, PKVM_PAGE_OWNED);

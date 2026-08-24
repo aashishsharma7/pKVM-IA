@@ -215,5 +215,6 @@ void pkvm_x86_ops_init(struct pkvm_x86_ops *ops);
 int pkvm_emulate_hypercall(struct kvm_vcpu *vcpu);
 typedef int (*pkvm_vm_func_t)(struct pkvm_vm *vm, void *arg);
 int pkvm_walk_each_vm(pkvm_vm_func_t func, void *arg);
+bool is_pci_bdf_assigned(u8 bus, u8 dev, u8 func);
 
 #endif /* __PKVM_X86_PKVM_H */

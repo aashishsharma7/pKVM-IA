@@ -2176,6 +2176,10 @@ int pkvm_host_share_guest_mmio(struct kvm_vcpu *vcpu, unsigned long gpa,
 		return -EPERM;
 	}
 
+	/* Dynamically unmap BAR from Host Stage-2 EPT */
+	host_mmu_unmap(hpa, size);
+	pkvm_info("pKVM: Dynamically unmapped BAR HPA 0x%lx (size 0x%lx) from Host Stage-2 EPT\n", hpa, size);
+
 	/* Experimental bypass for GPU passthrough POC */
 	ret = 0; // check_page_state(&host_mmu, hpa, size, PKVM_PAGE_OWNED);
 	if (ret) {

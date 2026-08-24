@@ -15195,6 +15195,7 @@ int pkvm_emulate_hypercall(struct kvm_vcpu *vcpu)
 								if ((adev->guest_bars[idx] & 1) == 0 || idx == 8) {
 									pr_info("pKVM: Guest bound ECAM BAR%d PA 0x%lx -> GPA 0x%llx\n", idx, adev->bars[j].hpa, gpa);
 									pkvm_host_share_guest_mmio(vcpu, gpa, adev->bars[j].hpa, adev->bars[j].size, true);
+									pr_info("pKVM: Dynamically unmapped BAR%d HPA 0x%lx (size 0x%lx) from Host Stage-2 EPT\n", idx, adev->bars[j].hpa, adev->bars[j].size);
 								}
 							}
 						}

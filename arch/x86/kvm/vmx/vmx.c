@@ -5968,6 +5968,7 @@ static int handle_io(struct kvm_vcpu *vcpu)
 											if ((adev->guest_bars[idx] & 1) == 0) {
 												pr_info("v.pKVM: Guest bound MMIO BAR%d PA 0x%lx -> GPA 0x%llx\n", idx, adev->bars[j].hpa, gpa);
 												pkvm_host_share_guest_mmio(vcpu, gpa, adev->bars[j].hpa, adev->bars[j].size, true);
+												pr_info("pKVM: Dynamically unmapped BAR%d HPA 0x%lx (size 0x%lx) from Host Stage-2 EPT\n", idx, adev->bars[j].hpa, adev->bars[j].size);
 											} else {
 												pr_info("v.pKVM: Guest bound PIO BAR%d (Ignored for MMIO) PA 0x%lx\n", idx, adev->bars[j].hpa);
 											}

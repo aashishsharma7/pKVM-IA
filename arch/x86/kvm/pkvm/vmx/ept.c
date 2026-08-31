@@ -454,11 +454,19 @@ void pkvm_handle_host_ept_violation(struct kvm_vcpu *vcpu)
 	BUG_ON(!host_ept);
 
 	gpa = vmcs_read64(GUEST_PHYSICAL_ADDRESS);
-	/*
-	 * All the memory and MMIO holes have already been mapped in the host
-	 * EPT when initialize, except for the MMIO in the high-end address.
-	 * Handle the MMIO only.
-	 */
+	/* Check if targeting an assigned device's physical ECAM space */
+	if (pkvm_is_assigned_device_ecam(gpa)) {
+		unsigned long exit_qual = vmcs_readl(EXIT_QUALIFICATION);
+		if (exit_qual & EPT_VIOLATION_ACC_WRITE) {
+			pkvm_info("pKVM: Blocked Host Stage-2 ECAM WRITE to assigned device at 0x%lx\n", gpa);
+			unsigned long insn_len = vmcs_read32(VM_EXIT_INSTRUCTION_LEN);
+			if (!insn_len)
+				insn_len = 6;
+			vmcs_writel(GUEST_RIP, vmcs_readl(GUEST_RIP) + insn_len);
+			return;
+		}
+	}
+
 	if (pkvm_find_addr_range(gpa, &range) || is_pvmfw(gpa) ||
 	    is_iommu_mmio(gpa)) {
 		pkvm_err_ratelimited("Host access to protected memory at 0x%lx\n", gpa);

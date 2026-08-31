@@ -118,7 +118,8 @@ struct pkvm_assigned_dev {
 	u16 rid;
 	u16 virtual_rid;
 	int num_bars;
-unsigned long guest_bars[PKVM_MAX_DEVICE_BARS];
+	unsigned long phys_ecam_page;
+	unsigned long guest_bars[PKVM_MAX_DEVICE_BARS];
 	struct pkvm_bar_range bars[PKVM_MAX_DEVICE_BARS];
 	struct pkvm_vm *vm;
 	struct list_head node;
@@ -132,4 +133,5 @@ int pkvm_host_register_device(struct pkvm_vm *vm, u16 rid, u64 iommu_phys);
 struct dmar_domain *pkvm_iommu_register_device(struct pkvm_vm *vm, u16 rid, u64 iommu_phys);
 
 bool pkvm_is_bar_hpa(struct pkvm_vm *vm, unsigned long hpa, unsigned long size);
+bool pkvm_is_assigned_device_ecam(unsigned long phys_addr);
 #endif /* __PKVM_X86_MEM_PROTECT_H */

@@ -1775,7 +1775,8 @@ static int pkvm_vm_mmu_map(unsigned long gpa, unsigned long hpa,
 	} else {
 		if (is_mmio_range(hpa, size)) {
 			if (pkvm_is_bar_hpa(to_pkvm_vcpu(vcpu)->pkvm_vm, hpa, size)) {
-				pr_info("pKVM: QEMU mapping SKIPPED for BAR at GPA 0x%lx (size: 0x%lx)\n", gpa, size);
+				pr_info("pKVM: QEMU mapping SKIPPED for assigned BAR at GPA 0x%lx (HPA 0x%lx, size: 0x%lx)\n",
+					gpa, hpa, size);
 				ret = 0;
 			} else {
 				pr_info("pKVM: QEMU MMIO memslot map requested at GPA 0x%lx (size: 0x%lx)\n", gpa, size);

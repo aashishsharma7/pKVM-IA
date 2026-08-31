@@ -365,16 +365,76 @@ static void handle_host_io(struct kvm_vcpu *vcpu)
 
 		/* Check if targeting an actively assigned device */
 		if (is_pci_bdf_assigned(bus, dev, func)) {
-			if (!in && offset >= 0x10 && offset <= 0x24) {
-				pkvm_info("pKVM: Blocked Host Port-I/O write to assigned device %02x:%02x.%d BAR (offset 0x%x, val 0x%lx)\n",
-				          bus, dev, func, offset, vcpu->arch.regs[VCPU_REGS_RAX]);
-				/* Suppress hardware write while assigned to protected VM */
-				return;
+			u32 val = (u32)vcpu->arch.regs[VCPU_REGS_RAX];
+			int sz = (size == 0 ? 1 : (size == 1 ? 2 : 4));
+
+			if (!in) {
+				/* Host WRITE to Assigned Device */
+				switch (offset) {
+				case 0x00 ... 0x03:
+					pkvm_info("pKVM: Blocked Host WRITE to RO Vendor/Device ID (offset 0x%x, val 0x%x, sz %d)\n",
+					          offset, val, sz);
+					return;
+				case 0x04 ... 0x05:
+					pkvm_info("pKVM: Filtered Host WRITE to Command Register (offset 0x%x, val 0x%x, sz %d)\n",
+					          offset, val, sz);
+					break;
+				case 0x06 ... 0x07:
+					pkvm_info("pKVM: Allowed Host WRITE to Status Register W1C (offset 0x%x, val 0x%x, sz %d)\n",
+					          offset, val, sz);
+					break;
+				case 0x08 ... 0x0F:
+					pkvm_info("pKVM: Blocked Host WRITE to RO RevID/Class/CLS/BIST (offset 0x%x, val 0x%x, sz %d)\n",
+					          offset, val, sz);
+					return;
+				case 0x10 ... 0x27:
+					pkvm_info("pKVM: Blocked Host WRITE to BAR%d (offset 0x%x, val 0x%x, sz %d)\n",
+					          (offset - 0x10) / 4, offset, val, sz);
+					/* Suppress hardware write while assigned to protected VM */
+					return;
+				case 0x28 ... 0x2F:
+					pkvm_info("pKVM: Blocked Host WRITE to CardBus/Subsystem ID (offset 0x%x, val 0x%x, sz %d)\n",
+					          offset, val, sz);
+					return;
+				case 0x30 ... 0x33:
+					pkvm_info("pKVM: Blocked Host WRITE to Expansion ROM BAR (offset 0x%x, val 0x%x, sz %d)\n",
+					          offset, val, sz);
+					/* Suppress hardware write */
+					return;
+				case 0x34 ... 0x3B:
+					pkvm_info("pKVM: Blocked Host WRITE to RO CapPtr/Reserved (offset 0x%x, val 0x%x, sz %d)\n",
+					          offset, val, sz);
+					return;
+				case 0x3C ... 0x3F:
+					pkvm_info("pKVM: Blocked Host WRITE to Interrupt Line/Pin (offset 0x%x, val 0x%x, sz %d)\n",
+					          offset, val, sz);
+					return;
+				case 0x40 ... 0x6F:
+					pkvm_info("pKVM: Allowed Host WRITE to Intel Vendor Specific Cap (offset 0x%x, val 0x%x, sz %d)\n",
+					          offset, val, sz);
+					break;
+				case 0x70 ... 0xAB:
+					pkvm_info("pKVM: Allowed Host WRITE to PCIe Capability (offset 0x%x, val 0x%x, sz %d)\n",
+					          offset, val, sz);
+					break;
+				case 0xAC ... 0xCF:
+					pkvm_info("pKVM: Mediated Host WRITE to MSI Capability (offset 0x%x, val 0x%x, sz %d)\n",
+					          offset, val, sz);
+					break;
+				case 0xD0 ... 0xDF:
+					pkvm_info("pKVM: Allowed Host WRITE to Power Management PMCSR (offset 0x%x, val 0x%x, sz %d)\n",
+					          offset, val, sz);
+					break;
+				default:
+					pkvm_info("pKVM: Blocked Host WRITE to Unclassified offset 0x%x (val 0x%x, sz %d)\n",
+					          offset, val, sz);
+					return;
+				}
+			} else {
+				/* Host READ from Assigned Device */
+				pkvm_info("pKVM: Allowed Host READ from %02x:%02x.%d reg 0x%x (sz %d)\n",
+				          bus, dev, func, offset, sz);
 			}
-			pkvm_info("pKVM: Host Port-I/O %s %02x:%02x.%d reg 0x%x (val 0x%lx, size %d)\n",
-			          in ? "READ from" : "WRITE to",
-			          bus, dev, func, offset, vcpu->arch.regs[VCPU_REGS_RAX],
-			          size == 0 ? 1 : (size == 1 ? 2 : 4));
 		}
 
 		/* Pass-through all other I/O to hardware */

@@ -2048,6 +2048,20 @@ bool is_pci_bdf_assigned(u8 bus, u8 dev, u8 func)
 	return false;
 }
 
+static unsigned long pkvm_get_phys_mmconfig_base(void)
+{
+	/* Read PCIEXBAR from BDF 00:00.0 offset 0x60 on Intel Root Complex */
+	u32 low = pci_config_read_dword(0x0000, 0x60);
+	u32 high = pci_config_read_dword(0x0000, 0x64);
+	u64 pciexbar = ((u64)high << 32) | low;
+
+	if (pciexbar & 1)
+		return pciexbar & ~0x3FFFFFFFULL;
+
+	/* Fallback: standard Intel Alder Lake / Q670 default MMCONFIG base */
+	return 0xE0000000UL;
+}
+
 int pkvm_host_register_device(struct pkvm_vm *vm, u16 rid, u64 iommu_phys)
 {
 	struct pkvm_assigned_dev *dev;
@@ -2095,6 +2109,21 @@ int pkvm_host_register_device(struct pkvm_vm *vm, u16 rid, u64 iommu_phys)
 	dev->virtual_rid = 0x10; // Hardcoded for POC (bus 0, dev 2, fn 0)
 	dev->vm = vm;
 	dev->io_blocked = false;
+	dev->phys_ecam_page = 0;
+
+	/* Discover physical ECAM page from PCIEXBAR */
+	{
+		u8 bus = rid >> 8;
+		u8 devfn = rid & 0xff;
+		unsigned long ecam_base = pkvm_get_phys_mmconfig_base();
+		if (ecam_base) {
+			dev->phys_ecam_page = ecam_base +
+					      ((unsigned long)bus << 20) +
+					      ((unsigned long)devfn << 12);
+			pkvm_info("  Discovered physical ECAM page: 0x%lx for device 0x%x\n",
+				  dev->phys_ecam_page, rid);
+		}
+	}
 
 	/* Automatically discover and size BARs directly from the hardware config space */
 	for (bar_idx = 0; bar_idx < PKVM_MAX_DEVICE_BARS; bar_idx++) {
@@ -2194,14 +2223,22 @@ int pkvm_host_share_guest_mmio(struct kvm_vcpu *vcpu, unsigned long gpa,
 	host_mmu_unmap(hpa, size);
 	pkvm_info("pKVM: Dynamically unmapped BAR HPA 0x%lx (size 0x%lx) from Host Stage-2 EPT\n", hpa, size);
 
-	/* Activate host Port-I/O write blocking now that BAR/ECAM is unmapped and protected */
+	/* Activate host Port-I/O write blocking for BARs and configure Read-Only Stage-2 EPT for physical ECAM */
 	{
 		int i;
 		for (i = 0; i < pkvm_num_assigned_devices; i++) {
 			struct pkvm_assigned_dev *adev = &pkvm_assigned_devices[i];
-			if (adev->vm == pkvm_vm && !adev->io_blocked) {
-				adev->io_blocked = true;
-				pkvm_info("pKVM: Activated Host Port-I/O write blocking for device 0x%x\n", adev->rid);
+			if (adev->vm == pkvm_vm) {
+				if (!adev->io_blocked) {
+					adev->io_blocked = true;
+					pkvm_info("pKVM: Activated Host Port-I/O write blocking for device 0x%x\n", adev->rid);
+				}
+				if (adev->phys_ecam_page) {
+					pkvm_pgtable_map(&host_mmu, adev->phys_ecam_page, adev->phys_ecam_page, PAGE_SIZE,
+					                 host_mmu_pte_prot(false, true), NULL);
+					pkvm_info("pKVM: Configured Read-Only Host Stage-2 EPT for physical ECAM 0x%lx\n",
+					          adev->phys_ecam_page);
+				}
 			}
 		}
 	}
@@ -2243,6 +2280,18 @@ bool pkvm_is_bar_hpa(struct pkvm_vm *vm, unsigned long hpa, unsigned long size)
 					return true;
 			}
 		}
+	}
+	return false;
+}
+
+bool pkvm_is_assigned_device_ecam(unsigned long phys_addr)
+{
+	unsigned long page_pa = ALIGN_DOWN(phys_addr, PAGE_SIZE);
+	int i;
+	for (i = 0; i < pkvm_num_assigned_devices; i++) {
+		struct pkvm_assigned_dev *dev = &pkvm_assigned_devices[i];
+		if (dev->vm != NULL && dev->io_blocked && dev->phys_ecam_page == page_pa)
+			return true;
 	}
 	return false;
 }
